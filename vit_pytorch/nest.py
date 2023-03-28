@@ -131,7 +131,7 @@ class NesT(nn.Module):
         fmap_size = image_size // patch_size
         blocks = 2 ** (num_hierarchies - 1)
 
-        seq_len = (fmap_size // blocks) ** 2   # sequence length is held constant across heirarchy
+        seq_len = (fmap_size // blocks) ** 2   # sequence length is held constant across hierarchy
         hierarchies = list(reversed(range(num_hierarchies)))
         mults = [2 ** i for i in reversed(hierarchies)]
 
@@ -144,7 +144,9 @@ class NesT(nn.Module):
 
         self.to_patch_embedding = nn.Sequential(
             Rearrange('b c (h p1) (w p2) -> b (p1 p2 c) h w', p1 = patch_size, p2 = patch_size),
+            LayerNorm(patch_dim),
             nn.Conv2d(patch_dim, layer_dims[0], 1),
+            LayerNorm(layer_dims[0])
         )
 
         block_repeats = cast_tuple(block_repeats, num_hierarchies)

@@ -1,4 +1,5 @@
 import torch
+import torch.nn.functional as F
 from torch import nn
 
 from einops import rearrange
@@ -9,17 +10,27 @@ from einops.layers.torch import Rearrange
 def pair(t):
     return t if isinstance(t, tuple) else (t, t)
 
-def posemb_sincos_2d(patches, temperature = 10000, dtype = torch.float32):
-    _, h, w, dim, device, dtype = *patches.shape, patches.device, patches.dtype
+def posemb_sincos_3d(patches, temperature = 10000, dtype = torch.float32):
+    _, f, h, w, dim, device, dtype = *patches.shape, patches.device, patches.dtype
 
-    y, x = torch.meshgrid(torch.arange(h, device = device), torch.arange(w, device = device), indexing = 'ij')
-    assert (dim % 4) == 0, 'feature dimension must be multiple of 4 for sincos emb'
-    omega = torch.arange(dim // 4, device = device) / (dim // 4 - 1)
+    z, y, x = torch.meshgrid(
+        torch.arange(f, device = device),
+        torch.arange(h, device = device),
+        torch.arange(w, device = device),
+    indexing = 'ij')
+
+    fourier_dim = dim // 6
+
+    omega = torch.arange(fourier_dim, device = device) / (fourier_dim - 1)
     omega = 1. / (temperature ** omega)
 
+    z = z.flatten()[:, None] * omega[None, :]
     y = y.flatten()[:, None] * omega[None, :]
     x = x.flatten()[:, None] * omega[None, :] 
-    pe = torch.cat((x.sin(), x.cos(), y.sin(), y.cos()), dim = 1)
+
+    pe = torch.cat((x.sin(), x.cos(), y.sin(), y.cos(), z.sin(), z.cos()), dim = 1)
+
+    pe = F.pad(pe, (0, dim - (fourier_dim * 6))) # pad if feature dimension not cleanly divisible by 6
     return pe.type(dtype)
 
 # classes
@@ -79,18 +90,19 @@ class Transformer(nn.Module):
         return x
 
 class SimpleViT(nn.Module):
-    def __init__(self, *, image_size, patch_size, num_classes, dim, depth, heads, mlp_dim, channels = 3, dim_head = 64):
+    def __init__(self, *, image_size, image_patch_size, frames, frame_patch_size, num_classes, dim, depth, heads, mlp_dim, channels = 3, dim_head = 64):
         super().__init__()
         image_height, image_width = pair(image_size)
-        patch_height, patch_width = pair(patch_size)
+        patch_height, patch_width = pair(image_patch_size)
 
         assert image_height % patch_height == 0 and image_width % patch_width == 0, 'Image dimensions must be divisible by the patch size.'
+        assert frames % frame_patch_size == 0, 'Frames must be divisible by the frame patch size'
 
-        num_patches = (image_height // patch_height) * (image_width // patch_width)
-        patch_dim = channels * patch_height * patch_width
+        num_patches = (image_height // patch_height) * (image_width // patch_width) * (frames // frame_patch_size)
+        patch_dim = channels * patch_height * patch_width * frame_patch_size
 
         self.to_patch_embedding = nn.Sequential(
-            Rearrange('b c (h p1) (w p2) -> b h w (p1 p2 c)', p1 = patch_height, p2 = patch_width),
+            Rearrange('b c (f pf) (h p1) (w p2) -> b f h w (p1 p2 pf c)', p1 = patch_height, p2 = patch_width, pf = frame_patch_size),
             nn.LayerNorm(patch_dim),
             nn.Linear(patch_dim, dim),
             nn.LayerNorm(dim),
@@ -104,11 +116,11 @@ class SimpleViT(nn.Module):
             nn.Linear(dim, num_classes)
         )
 
-    def forward(self, img):
-        *_, h, w, dtype = *img.shape, img.dtype
+    def forward(self, video):
+        *_, h, w, dtype = *video.shape, video.dtype
 
-        x = self.to_patch_embedding(img)
-        pe = posemb_sincos_2d(x)
+        x = self.to_patch_embedding(video)
+        pe = posemb_sincos_3d(x)
         x = rearrange(x, 'b ... d -> b (...) d') + pe
 
         x = self.transformer(x)

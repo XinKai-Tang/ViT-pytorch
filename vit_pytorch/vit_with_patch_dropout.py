@@ -11,6 +11,25 @@ def pair(t):
 
 # classes
 
+class PatchDropout(nn.Module):
+    def __init__(self, prob):
+        super().__init__()
+        assert 0 <= prob < 1.
+        self.prob = prob
+
+    def forward(self, x):
+        if not self.training or self.prob == 0.:
+            return x
+
+        b, n, _, device = *x.shape, x.device
+
+        batch_indices = torch.arange(b, device = device)
+        batch_indices = rearrange(batch_indices, '... -> ... 1')
+        num_patches_keep = max(1, int(n * (1 - self.prob)))
+        patch_indices_keep = torch.randn(b, n, device = device).topk(num_patches_keep, dim = -1).indices
+
+        return x[batch_indices, patch_indices_keep]
+
 class PreNorm(nn.Module):
     def __init__(self, dim, fn):
         super().__init__()
@@ -80,7 +99,7 @@ class Transformer(nn.Module):
         return x
 
 class ViT(nn.Module):
-    def __init__(self, *, image_size, patch_size, num_classes, dim, depth, heads, mlp_dim, pool = 'cls', channels = 3, dim_head = 64, dropout = 0., emb_dropout = 0.):
+    def __init__(self, *, image_size, patch_size, num_classes, dim, depth, heads, mlp_dim, pool = 'cls', channels = 3, dim_head = 64, dropout = 0., emb_dropout = 0., patch_dropout = 0.25):
         super().__init__()
         image_height, image_width = pair(image_size)
         patch_height, patch_width = pair(patch_size)
@@ -93,13 +112,13 @@ class ViT(nn.Module):
 
         self.to_patch_embedding = nn.Sequential(
             Rearrange('b c (h p1) (w p2) -> b (h w) (p1 p2 c)', p1 = patch_height, p2 = patch_width),
-            nn.LayerNorm(patch_dim),
             nn.Linear(patch_dim, dim),
-            nn.LayerNorm(dim),
         )
 
-        self.pos_embedding = nn.Parameter(torch.randn(1, num_patches + 1, dim))
+        self.pos_embedding = nn.Parameter(torch.randn(num_patches, dim))
         self.cls_token = nn.Parameter(torch.randn(1, 1, dim))
+
+        self.patch_dropout = PatchDropout(patch_dropout)
         self.dropout = nn.Dropout(emb_dropout)
 
         self.transformer = Transformer(dim, depth, heads, dim_head, mlp_dim, dropout)
@@ -116,9 +135,13 @@ class ViT(nn.Module):
         x = self.to_patch_embedding(img)
         b, n, _ = x.shape
 
+        x += self.pos_embedding
+
+        x = self.patch_dropout(x)
+
         cls_tokens = repeat(self.cls_token, '1 1 d -> b 1 d', b = b)
+
         x = torch.cat((cls_tokens, x), dim=1)
-        x += self.pos_embedding[:, :(n + 1)]
         x = self.dropout(x)
 
         x = self.transformer(x)

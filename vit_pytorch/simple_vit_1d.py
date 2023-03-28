@@ -6,20 +6,16 @@ from einops.layers.torch import Rearrange
 
 # helpers
 
-def pair(t):
-    return t if isinstance(t, tuple) else (t, t)
+def posemb_sincos_1d(patches, temperature = 10000, dtype = torch.float32):
+    _, n, dim, device, dtype = *patches.shape, patches.device, patches.dtype
 
-def posemb_sincos_2d(patches, temperature = 10000, dtype = torch.float32):
-    _, h, w, dim, device, dtype = *patches.shape, patches.device, patches.dtype
-
-    y, x = torch.meshgrid(torch.arange(h, device = device), torch.arange(w, device = device), indexing = 'ij')
-    assert (dim % 4) == 0, 'feature dimension must be multiple of 4 for sincos emb'
-    omega = torch.arange(dim // 4, device = device) / (dim // 4 - 1)
+    n = torch.arange(n, device = device)
+    assert (dim % 2) == 0, 'feature dimension must be multiple of 2 for sincos emb'
+    omega = torch.arange(dim // 2, device = device) / (dim // 2 - 1)
     omega = 1. / (temperature ** omega)
 
-    y = y.flatten()[:, None] * omega[None, :]
-    x = x.flatten()[:, None] * omega[None, :] 
-    pe = torch.cat((x.sin(), x.cos(), y.sin(), y.cos()), dim = 1)
+    n = n.flatten()[:, None] * omega[None, :]
+    pe = torch.cat((n.sin(), n.cos()), dim = 1)
     return pe.type(dtype)
 
 # classes
@@ -79,18 +75,16 @@ class Transformer(nn.Module):
         return x
 
 class SimpleViT(nn.Module):
-    def __init__(self, *, image_size, patch_size, num_classes, dim, depth, heads, mlp_dim, channels = 3, dim_head = 64):
+    def __init__(self, *, seq_len, patch_size, num_classes, dim, depth, heads, mlp_dim, channels = 3, dim_head = 64):
         super().__init__()
-        image_height, image_width = pair(image_size)
-        patch_height, patch_width = pair(patch_size)
 
-        assert image_height % patch_height == 0 and image_width % patch_width == 0, 'Image dimensions must be divisible by the patch size.'
+        assert seq_len % patch_size == 0
 
-        num_patches = (image_height // patch_height) * (image_width // patch_width)
-        patch_dim = channels * patch_height * patch_width
+        num_patches = seq_len // patch_size
+        patch_dim = channels * patch_size
 
         self.to_patch_embedding = nn.Sequential(
-            Rearrange('b c (h p1) (w p2) -> b h w (p1 p2 c)', p1 = patch_height, p2 = patch_width),
+            Rearrange('b c (n p) -> b n (p c)', p = patch_size),
             nn.LayerNorm(patch_dim),
             nn.Linear(patch_dim, dim),
             nn.LayerNorm(dim),
@@ -104,11 +98,11 @@ class SimpleViT(nn.Module):
             nn.Linear(dim, num_classes)
         )
 
-    def forward(self, img):
-        *_, h, w, dtype = *img.shape, img.dtype
+    def forward(self, series):
+        *_, n, dtype = *series.shape, series.dtype
 
-        x = self.to_patch_embedding(img)
-        pe = posemb_sincos_2d(x)
+        x = self.to_patch_embedding(series)
+        pe = posemb_sincos_1d(x)
         x = rearrange(x, 'b ... d -> b (...) d') + pe
 
         x = self.transformer(x)
@@ -116,3 +110,18 @@ class SimpleViT(nn.Module):
 
         x = self.to_latent(x)
         return self.linear_head(x)
+
+if __name__ == '__main__':
+
+    v = SimpleViT(
+        seq_len = 256,
+        patch_size = 16,
+        num_classes = 1000,
+        dim = 1024,
+        depth = 6,
+        heads = 8,
+        mlp_dim = 2048
+    )
+
+    time_series = torch.randn(4, 3, 256)
+    logits = v(time_series) # (4, 1000)

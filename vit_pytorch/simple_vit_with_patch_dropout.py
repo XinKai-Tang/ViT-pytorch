@@ -22,6 +22,27 @@ def posemb_sincos_2d(patches, temperature = 10000, dtype = torch.float32):
     pe = torch.cat((x.sin(), x.cos(), y.sin(), y.cos()), dim = 1)
     return pe.type(dtype)
 
+# patch dropout
+
+class PatchDropout(nn.Module):
+    def __init__(self, prob):
+        super().__init__()
+        assert 0 <= prob < 1.
+        self.prob = prob
+
+    def forward(self, x):
+        if not self.training or self.prob == 0.:
+            return x
+
+        b, n, _, device = *x.shape, x.device
+
+        batch_indices = torch.arange(b, device = device)
+        batch_indices = rearrange(batch_indices, '... -> ... 1')
+        num_patches_keep = max(1, int(n * (1 - self.prob)))
+        patch_indices_keep = torch.randn(b, n, device = device).topk(num_patches_keep, dim = -1).indices
+
+        return x[batch_indices, patch_indices_keep]
+
 # classes
 
 class FeedForward(nn.Module):
@@ -79,7 +100,7 @@ class Transformer(nn.Module):
         return x
 
 class SimpleViT(nn.Module):
-    def __init__(self, *, image_size, patch_size, num_classes, dim, depth, heads, mlp_dim, channels = 3, dim_head = 64):
+    def __init__(self, *, image_size, patch_size, num_classes, dim, depth, heads, mlp_dim, channels = 3, dim_head = 64, patch_dropout = 0.5):
         super().__init__()
         image_height, image_width = pair(image_size)
         patch_height, patch_width = pair(patch_size)
@@ -93,8 +114,10 @@ class SimpleViT(nn.Module):
             Rearrange('b c (h p1) (w p2) -> b h w (p1 p2 c)', p1 = patch_height, p2 = patch_width),
             nn.LayerNorm(patch_dim),
             nn.Linear(patch_dim, dim),
-            nn.LayerNorm(dim),
+            nn.LayerNorm(dim)
         )
+
+        self.patch_dropout = PatchDropout(patch_dropout)
 
         self.transformer = Transformer(dim, depth, heads, dim_head, mlp_dim)
 
@@ -110,6 +133,8 @@ class SimpleViT(nn.Module):
         x = self.to_patch_embedding(img)
         pe = posemb_sincos_2d(x)
         x = rearrange(x, 'b ... d -> b (...) d') + pe
+
+        x = self.patch_dropout(x)
 
         x = self.transformer(x)
         x = x.mean(dim = 1)

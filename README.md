@@ -27,9 +27,12 @@
 - [Masked Autoencoder](#masked-autoencoder)
 - [Simple Masked Image Modeling](#simple-masked-image-modeling)
 - [Masked Patch Prediction](#masked-patch-prediction)
+- [Masked Position Prediction](#masked-position-prediction)
 - [Adaptive Token Sampling](#adaptive-token-sampling)
 - [Patch Merger](#patch-merger)
 - [Vision Transformer for Small Datasets](#vision-transformer-for-small-datasets)
+- [3D Vit](#3d-vit)
+- [ViVit](#vivit)
 - [Parallel ViT](#parallel-vit)
 - [Learnable Memory ViT](#learnable-memory-vit)
 - [Dino](#dino)
@@ -51,6 +54,8 @@ For a Pytorch implementation with pretrained models, please see Ross Wightman's 
 The official Jax repository is <a href="https://github.com/google-research/vision_transformer">here</a>.
 
 A tensorflow2 translation also exists <a href="https://github.com/taki0112/vit-tensorflow">here</a>, created by research scientist <a href="https://github.com/taki0112">Junho Kim</a>! 🙏
+
+<a href="https://github.com/conceptofmind/vit-flax">Flax translation</a> by <a href="https://github.com/conceptofmind">Enrico Shippole</a>!
 
 ## Install
 
@@ -299,7 +304,7 @@ cct = CCT(
     pooling_padding = 1,
     num_layers = 14,
     num_heads = 6,
-    mlp_radio = 3.,
+    mlp_ratio = 3.,
     num_classes = 1000,
     positional_embedding = 'learnable', # ['sine', 'learnable', 'none']
 )
@@ -661,7 +666,7 @@ preds = v(img) # (2, 1000)
 
 <img src="./images/nest.png" width="400px"></img>
 
-This <a href="https://arxiv.org/abs/2105.12723">paper</a> decided to process the image in hierarchical stages, with attention only within tokens of local blocks, which aggregate as it moves up the heirarchy. The aggregation is done in the image plane, and contains a convolution and subsequent maxpool to allow it to pass information across the boundary.
+This <a href="https://arxiv.org/abs/2105.12723">paper</a> decided to process the image in hierarchical stages, with attention only within tokens of local blocks, which aggregate as it moves up the hierarchy. The aggregation is done in the image plane, and contains a convolution and subsequent maxpool to allow it to pass information across the boundary.
 
 You can use it with the following code (ex. NesT-T)
 
@@ -675,7 +680,7 @@ nest = NesT(
     dim = 96,
     heads = 3,
     num_hierarchies = 3,        # number of hierarchies
-    block_repeats = (2, 2, 8),  # the number of transformer blocks at each heirarchy, starting from the bottom
+    block_repeats = (2, 2, 8),  # the number of transformer blocks at each hierarchy, starting from the bottom
     num_classes = 1000
 )
 
@@ -840,6 +845,44 @@ for _ in range(100):
 torch.save(model.state_dict(), './pretrained-net.pt')
 ```
 
+## Masked Position Prediction
+
+<img src="./images/mp3.png" width="400px"></img>
+
+New <a href="https://arxiv.org/abs/2207.07611">paper</a> that introduces masked position prediction pre-training criteria. This strategy is more efficient than the Masked Autoencoder strategy and has comparable performance.  
+
+```python
+import torch
+from vit_pytorch.mp3 import ViT, MP3
+
+v = ViT(
+    num_classes = 1000,
+    image_size = 256,
+    patch_size = 8,
+    dim = 1024,
+    depth = 6,
+    heads = 8,
+    mlp_dim = 2048,
+    dropout = 0.1,
+)
+
+mp3 = MP3(
+    vit = v,
+    masking_ratio = 0.75
+)
+
+images = torch.randn(8, 3, 256, 256)
+
+loss = mp3(images)
+loss.backward()
+
+# that's all!
+# do the above in a for loop many times with a lot of images and your vision transformer will learn
+
+# save your improved vision transformer
+torch.save(v.state_dict(), './trained-vit.pt')
+```
+
 ## Adaptive Token Sampling
 
 <img src="./images/ats.png" width="400px"></img>
@@ -963,6 +1006,117 @@ spt = SPT(
 img = torch.randn(4, 3, 256, 256)
 
 tokens = spt(img) # (4, 256, 1024)
+```
+
+## 3D ViT
+
+By popular request, I will start extending a few of the architectures in this repository to 3D ViTs, for use with video, medical imaging, etc.
+
+You will need to pass in two additional hyperparameters: (1) the number of frames `frames` and (2) patch size along the frame dimension `frame_patch_size`
+
+For starters, 3D ViT
+
+```python
+import torch
+from vit_pytorch.vit_3d import ViT
+
+v = ViT(
+    image_size = 128,          # image size
+    frames = 16,               # number of frames
+    image_patch_size = 16,     # image patch size
+    frame_patch_size = 2,      # frame patch size
+    num_classes = 1000,
+    dim = 1024,
+    depth = 6,
+    heads = 8,
+    mlp_dim = 2048,
+    dropout = 0.1,
+    emb_dropout = 0.1
+)
+
+video = torch.randn(4, 3, 16, 128, 128) # (batch, channels, frames, height, width)
+
+preds = v(video) # (4, 1000)
+```
+
+3D Simple ViT
+
+```python
+import torch
+from vit_pytorch.simple_vit_3d import SimpleViT
+
+v = SimpleViT(
+    image_size = 128,          # image size
+    frames = 16,               # number of frames
+    image_patch_size = 16,     # image patch size
+    frame_patch_size = 2,      # frame patch size
+    num_classes = 1000,
+    dim = 1024,
+    depth = 6,
+    heads = 8,
+    mlp_dim = 2048
+)
+
+video = torch.randn(4, 3, 16, 128, 128) # (batch, channels, frames, height, width)
+
+preds = v(video) # (4, 1000)
+```
+
+3D version of <a href="https://github.com/lucidrains/vit-pytorch#cct">CCT</a>
+
+```python
+import torch
+from vit_pytorch.cct_3d import CCT
+
+cct = CCT(
+    img_size = 224,
+    num_frames = 8,
+    embedding_dim = 384,
+    n_conv_layers = 2,
+    frame_kernel_size = 3,
+    kernel_size = 7,
+    stride = 2,
+    padding = 3,
+    pooling_kernel_size = 3,
+    pooling_stride = 2,
+    pooling_padding = 1,
+    num_layers = 14,
+    num_heads = 6,
+    mlp_ratio = 3.,
+    num_classes = 1000,
+    positional_embedding = 'learnable'
+)
+
+video = torch.randn(1, 3, 8, 224, 224) # (batch, channels, frames, height, width)
+pred = cct(video)
+```
+
+## ViViT
+
+<img src="./images/vivit.png" width="350px"></img>
+
+This <a href="https://arxiv.org/abs/2103.15691">paper</a> offers 3 different types of architectures for efficient attention of videos, with the main theme being factorizing the attention across space and time. This repository will offer the first variant, which is a spatial transformer followed by a temporal one.
+
+```python
+import torch
+from vit_pytorch.vivit import ViT
+
+v = ViT(
+    image_size = 128,          # image size
+    frames = 16,               # number of frames
+    image_patch_size = 16,     # image patch size
+    frame_patch_size = 2,      # frame patch size
+    num_classes = 1000,
+    dim = 1024,
+    spatial_depth = 6,         # depth of the spatial transformer
+    temporal_depth = 6,        # depth of the temporal transformer
+    heads = 8,
+    mlp_dim = 2048
+)
+
+video = torch.randn(4, 3, 16, 128, 128) # (batch, channels, frames, height, width)
+
+preds = v(video) # (4, 1000)
 ```
 
 ## Parallel ViT
@@ -1749,6 +1903,38 @@ Coming from computer vision and new to transformers? Here are some resources tha
 ```
 
 ```bibtex
+@article{Arnab2021ViViTAV,
+    title   = {ViViT: A Video Vision Transformer},
+    author  = {Anurag Arnab and Mostafa Dehghani and Georg Heigold and Chen Sun and Mario Lucic and Cordelia Schmid},
+    journal = {2021 IEEE/CVF International Conference on Computer Vision (ICCV)},
+    year    = {2021},
+    pages   = {6816-6826}
+}
+```
+
+```bibtex
+@article{Liu2022PatchDropoutEV,
+    title   = {PatchDropout: Economizing Vision Transformers Using Patch Dropout},
+    author  = {Yue Liu and Christos Matsoukas and Fredrik Strand and Hossein Azizpour and Kevin Smith},
+    journal = {ArXiv},
+    year    = {2022},
+    volume  = {abs/2208.07220}
+}
+```
+
+```bibtex
+@misc{https://doi.org/10.48550/arxiv.2302.01327,
+    doi     = {10.48550/ARXIV.2302.01327},
+    url     = {https://arxiv.org/abs/2302.01327},
+    author  = {Kumar, Manoj and Dehghani, Mostafa and Houlsby, Neil},
+    title   = {Dual PatchNorm},
+    publisher = {arXiv},
+    year    = {2023},
+    copyright = {Creative Commons Attribution 4.0 International}
+}
+```
+
+```bibtex
 @misc{vaswani2017attention,
     title   = {Attention Is All You Need},
     author  = {Ashish Vaswani and Noam Shazeer and Niki Parmar and Jakob Uszkoreit and Llion Jones and Aidan N. Gomez and Lukasz Kaiser and Illia Polosukhin},
@@ -1756,6 +1942,15 @@ Coming from computer vision and new to transformers? Here are some resources tha
     eprint  = {1706.03762},
     archivePrefix = {arXiv},
     primaryClass = {cs.CL}
+}
+```
+
+```bibtex
+@inproceedings{dao2022flashattention,
+    title   = {Flash{A}ttention: Fast and Memory-Efficient Exact Attention with {IO}-Awareness},
+    author  = {Dao, Tri and Fu, Daniel Y. and Ermon, Stefano and Rudra, Atri and R{\'e}, Christopher},
+    booktitle = {Advances in Neural Information Processing Systems},
+    year    = {2022}
 }
 ```
 
